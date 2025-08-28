@@ -6,6 +6,8 @@ import pymysql
 import io
 import os
 from xlsxwriter import Workbook
+from flask_mail import Mail
+from itsdangerous import URLSafeTimedSerializer
 
 app = Flask(__name__, template_folder='templates', static_folder='static')
 
@@ -27,11 +29,27 @@ db_uri = (
     _build_fallback_mysql_uri()
 )
 
+db_uri = "mysql+pymysql://root:PdLFHoogsraoXCjLaYVUxgLHaLJDucon@hopper.proxy.rlwy.net:58944/railway"
+
+
 app.config['SQLALCHEMY_DATABASE_URI'] = db_uri
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 app.config['SQLALCHEMY_ENGINE_OPTIONS'] = {"pool_pre_ping": True}
 
 db = SQLAlchemy(app)
+
+app.config['MAIL_SERVER'] = os.getenv('MAIL_SERVER', 'smtp.gmail.com')
+app.config['MAIL_PORT'] = int(os.getenv('MAIL_PORT', 587))
+app.config['MAIL_USE_TLS'] = os.getenv('MAIL_USE_TLS', 'True') == 'True'
+app.config['MAIL_USERNAME'] = os.getenv('MAIL_USERNAME')
+app.config['MAIL_PASSWORD'] = os.getenv('MAIL_PASSWORD')
+app.config['MAIL_DEFAULT_SENDER'] = os.getenv('MAIL_DEFAULT_SENDER')
+
+mail = Mail(app)
+
+# ---- Token Serializer for password reset ----
+TOKEN_SERIALIZER = URLSafeTimedSerializer(app.config['SECRET_KEY'])
+RESET_TOKEN_SALT = os.environ.get('RESET_TOKEN_SALT', 'reset-password-salt')
 # SQLAlchemy engine with error handling
 try:
     engine = create_engine(db_uri)
