@@ -49,12 +49,17 @@ def _build_fallback_mysql_uri():
     logger.info(f"Built fallback URI from components: {uri}")
     return uri
 
-db_uri = (
+raw_db_uri = (
     os.getenv('SQLALCHEMY_DATABASE_URI') or
     os.getenv('MYSQL_URL') or
-    os.getenv('DATABASE_URL') or
-    _build_fallback_mysql_uri()
+    os.getenv('DATABASE_URL')
 )
+
+# Patch the scheme for SQLAlchemy if needed
+if raw_db_uri and raw_db_uri.startswith("mysql://"):
+    db_uri = raw_db_uri.replace("mysql://", "mysql+pymysql://", 1)
+else:
+    db_uri = raw_db_uri or _build_fallback_mysql_uri()
 
 if not db_uri:
     logger.warning('No DATABASE_URL or DB_* components provided. The app will start but DB operations will fail until configured.')
@@ -65,12 +70,9 @@ app.config['SQLALCHEMY_DATABASE_URI'] = db_uri
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 app.config['SQLALCHEMY_ENGINE_OPTIONS'] = {"pool_pre_ping": True}
 
-# SQLAlchemy ORM object
 db = SQLAlchemy(app)
 
-# Create a lazily-initialized engine for pandas / raw SQL operations (cached)
 _engine = None
-
 def get_engine():
     global _engine
     if _engine is None:
@@ -78,6 +80,7 @@ def get_engine():
             raise RuntimeError('Database URI is not configured')
         _engine = create_engine(db_uri, pool_pre_ping=True)
     return _engine
+
 
 # ---- Token Serializer for password reset ----
 TOKEN_SERIALIZER = URLSafeTimedSerializer(app.config['SECRET_KEY'])
