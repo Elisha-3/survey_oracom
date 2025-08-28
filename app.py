@@ -9,6 +9,8 @@ from xlsxwriter import Workbook
 
 app = Flask(__name__, template_folder='templates', static_folder='static')
 
+app.config['SECRET_KEY'] = os.getenv('FLASK_SECRET', '$#$^%%*')
+
 # Database Configuration
 def _build_fallback_mysql_uri():
     host = os.getenv('DB_HOST', 'localhost')
