@@ -59,6 +59,10 @@ mail = Mail(app)
 # ----------------------
 # Database Setup
 # ----------------------
+# Railway provides DATABASE_URL by default
+if not os.getenv('SQLALCHEMY_DATABASE_URI'):
+    os.environ['SQLALCHEMY_DATABASE_URI'] = os.getenv('DATABASE_URL', '')
+
 db_uri = os.getenv('SQLALCHEMY_DATABASE_URI')
 if not db_uri:
     user = os.getenv('MYSQLUSER')
