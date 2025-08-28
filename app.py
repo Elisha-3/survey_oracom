@@ -59,36 +59,41 @@ mail = Mail(app)
 # ----------------------
 # Database Setup
 # ----------------------
-def build_db_uri(private=False):
-    prefix = 'MYSQL_PRIVATE_' if private else 'MYSQL'
-    host = os.getenv(f'{prefix}HOST')
+db_uri = os.getenv('SQLALCHEMY_DATABASE_URI')
+if not db_uri:
     user = os.getenv('MYSQLUSER')
     pwd = os.getenv('MYSQLPASSWORD')
+    host = os.getenv('MYSQLHOST')
+    port = os.getenv('MYSQLPORT', '3306')
     name = os.getenv('MYSQLDATABASE')
-    port = os.getenv(f'{prefix}PORT', '3306')
-    logger.info(f"Raw env vars - {prefix}HOST: {host}, MYSQLUSER: {user}, MYSQLPASSWORD: [hidden], MYSQLDATABASE: {name}, {prefix}PORT: {port}")
-    if not all([host, user, pwd, name, port]):
-        logger.warning(f'Missing MySQL components for {"private" if private else "public"} connection')
-        return None
-    uri = f"mysql+pymysql://{user}:{pwd}@{host}:{port}/{name}"
-    logger.info(f"Built {'private' if private else 'public'} DB URI: {uri}")
-    return uri
+    if all([user, pwd, host, port, name]):
+        db_uri = f"mysql+pymysql://{user}:{pwd}@{host}:{port}/{name}"
+        logger.info(f"Built DB URI using env vars (host: {host}, port: {port})")
+    else:
+        logger.warning('Missing MySQL env vars for DB connection')
 
-db_uri = (
-    os.getenv('SQLALCHEMY_DATABASE_URI') or
-    os.getenv('MYSQL_PRIVATE_URL') or
-    os.getenv('DATABASE_PRIVATE_URL') or
-    build_db_uri(private=True) or
-    os.getenv('MYSQL_URL') or
-    os.getenv('DATABASE_URL') or
-    build_db_uri(private=False)
-)
+# Fallback to other possible URIs and ensure pymysql driver
+if not db_uri:
+    fallback_uris = [
+        os.getenv('MYSQL_PRIVATE_URL'),
+        os.getenv('DATABASE_PRIVATE_URL'),
+        os.getenv('MYSQL_URL'),
+        os.getenv('DATABASE_URL')
+    ]
+    for uri in fallback_uris:
+        if uri:
+            db_uri = uri
+            break
+
+if db_uri and db_uri.startswith('mysql://'):
+    db_uri = db_uri.replace('mysql://', 'mysql+pymysql://', 1)
+    logger.info("Adjusted DB URI to use pymysql driver")
 
 if not db_uri:
     logger.warning('No database URI configured, DB operations will fail')
 else:
     app.config['SQLALCHEMY_DATABASE_URI'] = db_uri
-    logger.info(f"Using DB URI: {db_uri}")
+    logger.info(f"Using DB URI (masked): {db_uri.split('://')[0]}://***@{db_uri.split('@')[1] if '@' in db_uri else 'unknown'}")
 
 db = SQLAlchemy(app)
 
@@ -201,7 +206,7 @@ def get_data():
                 if option in q1_options:
                     q1_counts[option] += 1
 
-        total_respondents = len(df['q1'].dropna().unique())
+        total_respondents = len(df)
         q1_dist = {
             'Q1': len(df[df['q1'].notna()]) / total_respondents if total_respondents > 0 else 0,
             'Q2': len(df[df['q2'].notna()]) / total_respondents if total_respondents > 0 else 0,
@@ -280,4 +285,4 @@ def health():
 
 if __name__ == '__main__':
     port = int(os.getenv('PORT', 8080))
-    app.run(host='::', port=port, debug=os.getenv('FLASK_DEBUG', 'False').lower() in ('true', '1', 'yes'))
+    app.run(host='0.0.0.0', port=port, debug=os.getenv('FLASK_DEBUG', 'False').lower() in ('true', '1', 'yes'))
