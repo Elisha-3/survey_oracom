@@ -37,14 +37,17 @@ mail = Mail(app)
 # ----------------------
 # Prefer a single DATABASE_URL env var; fallback to components if provided
 def _build_fallback_mysql_uri():
-    host = os.getenv('DB_HOST')
-    user = os.getenv('DB_USER')
-    pwd  = os.getenv('DB_PASSWORD')
-    name = os.getenv('DB_NAME')
-    port = os.getenv('DB_PORT')
+    host = os.getenv('MYSQLHOST')
+    user = os.getenv('MYSQLUSER')
+    pwd = os.getenv('MYSQLPASSWORD')
+    name = os.getenv('MYSQLDATABASE')
+    port = os.getenv('MYSQLPORT')
     if not (host and user and pwd and name and port):
+        logger.warning('Missing some MySQL fallback components (MYSQLHOST, MYSQLUSER, etc.).')
         return None
-    return f"mysql+pymysql://{user}:{pwd}@{host}:{port}/{name}"
+    uri = f"mysql+pymysql://{user}:{pwd}@{host}:{port}/{name}"
+    logger.info(f"Built fallback URI from components: {uri}")
+    return uri
 
 db_uri = (
     os.getenv('SQLALCHEMY_DATABASE_URI') or
@@ -55,6 +58,8 @@ db_uri = (
 
 if not db_uri:
     logger.warning('No DATABASE_URL or DB_* components provided. The app will start but DB operations will fail until configured.')
+else:
+    logger.info(f"Using DB URI: {db_uri}")
 
 app.config['SQLALCHEMY_DATABASE_URI'] = db_uri
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
