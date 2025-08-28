@@ -15,11 +15,11 @@ app.config['SECRET_KEY'] = os.getenv('FLASK_SECRET', '$#$^%%*')
 
 # Database Configuration
 def _build_fallback_mysql_uri():
-    host = os.getenv('DB_HOST', 'localhost')
-    user = os.getenv('DB_USER', 'root')
-    pwd  = os.getenv('DB_PASSWORD', '')
-    name = os.getenv('DB_NAME', '')
-    port = os.getenv('DB_PORT', '3306')
+    host = os.getenv('DB_HOST')
+    user = os.getenv('DB_USER')
+    pwd  = os.getenv('DB_PASSWORD')
+    name = os.getenv('DB_NAME')
+    port = os.getenv('DB_PORT')
     return f"mysql+pymysql://{user}:{pwd}@{host}:{port}/{name}"
 
 db_uri = (
@@ -29,15 +29,13 @@ db_uri = (
     _build_fallback_mysql_uri()
 )
 
-db_uri = "mysql+pymysql://root:PdLFHoogsraoXCjLaYVUxgLHaLJDucon@hopper.proxy.rlwy.net:58944/railway"
-
-
 app.config['SQLALCHEMY_DATABASE_URI'] = db_uri
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 app.config['SQLALCHEMY_ENGINE_OPTIONS'] = {"pool_pre_ping": True}
 
 db = SQLAlchemy(app)
 
+# ---- Email Configuration ----
 app.config['MAIL_SERVER'] = os.getenv('MAIL_SERVER', 'smtp.gmail.com')
 app.config['MAIL_PORT'] = int(os.getenv('MAIL_PORT', 587))
 app.config['MAIL_USE_TLS'] = os.getenv('MAIL_USE_TLS', 'True') == 'True'
