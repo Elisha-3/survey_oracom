@@ -65,7 +65,8 @@ def build_db_uri(private=False):
     user = os.getenv('MYSQLUSER')
     pwd = os.getenv('MYSQLPASSWORD')
     name = os.getenv('MYSQLDATABASE')
-    port = os.getenv(f'{prefix}PORT')
+    port = os.getenv(f'{prefix}PORT', '3306')
+    logger.info(f"Raw env vars - {prefix}HOST: {host}, MYSQLUSER: {user}, MYSQLPASSWORD: [hidden], MYSQLDATABASE: {name}, {prefix}PORT: {port}")
     if not all([host, user, pwd, name, port]):
         logger.warning(f'Missing MySQL components for {"private" if private else "public"} connection')
         return None
