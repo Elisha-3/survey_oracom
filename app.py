@@ -8,80 +8,115 @@ from xlsxwriter import Workbook
 from flask_mail import Mail
 from itsdangerous import URLSafeTimedSerializer
 import logging
+from contextlib import contextmanager
 
 # ----------------------
-# App & Logging
+# Configuration & Logging
 # ----------------------
 app = Flask(__name__, template_folder='templates', static_folder='static')
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# ----------------------
-# Secrets & Config
-# ----------------------
-app.config['SECRET_KEY'] = os.getenv('FLASK_SECRET', '$#$^%%*')
+# Load environment variables with validation
+class Config:
+    SECRET_KEY = os.getenv('FLASK_SECRET')
+    if not SECRET_KEY:
+        raise ValueError("FLASK_SECRET must be set in environment variables")
+    
+    MAIL_SERVER = os.getenv('MAIL_SERVER', 'smtp.gmail.com')
+    MAIL_PORT = int(os.getenv('MAIL_PORT', 587))
+    MAIL_USE_TLS = os.getenv('MAIL_USE_TLS', 'True').lower() in ('true', '1', 'yes')
+    MAIL_USE_SSL = os.getenv('MAIL_USE_SSL', 'False').lower() in ('true', '1', 'yes')
+    MAIL_USERNAME = os.getenv('MAIL_USERNAME')
+    if not MAIL_USERNAME:
+        logger.warning("MAIL_USERNAME not set, email functionality may fail")
+    MAIL_PASSWORD = os.getenv('MAIL_PASSWORD')
+    if not MAIL_PASSWORD:
+        logger.warning("MAIL_PASSWORD not set, email functionality may fail")
+    MAIL_DEFAULT_SENDER = os.getenv('MAIL_DEFAULT_SENDER', MAIL_USERNAME)
 
-# Mail configuration (read from env safely)
-app.config['MAIL_SERVER'] = os.getenv('MAIL_SERVER', 'smtp.gmail.com')
-app.config['MAIL_PORT'] = int(os.getenv('MAIL_PORT', 587))
-app.config['MAIL_USE_TLS'] = os.getenv('MAIL_USE_TLS', 'True').lower() in ('true', '1', 'yes')
-app.config['MAIL_USE_SSL'] = os.getenv('MAIL_USE_SSL', 'False').lower() in ('true', '1', 'yes')
-app.config['MAIL_USERNAME'] = os.getenv('MAIL_USERNAME')
-app.config['MAIL_PASSWORD'] = os.getenv('MAIL_PASSWORD')
-app.config['MAIL_DEFAULT_SENDER'] = os.getenv('MAIL_DEFAULT_SENDER', app.config.get('MAIL_USERNAME'))
+app.config.update(
+    SECRET_KEY=Config.SECRET_KEY,
+    MAIL_SERVER=Config.MAIL_SERVER,
+    MAIL_PORT=Config.MAIL_PORT,
+    MAIL_USE_TLS=Config.MAIL_USE_TLS,
+    MAIL_USE_SSL=Config.MAIL_USE_SSL,
+    MAIL_USERNAME=Config.MAIL_USERNAME,
+    MAIL_PASSWORD=Config.MAIL_PASSWORD,
+    MAIL_DEFAULT_SENDER=Config.MAIL_DEFAULT_SENDER,
+    SQLALCHEMY_TRACK_MODIFICATIONS=False,
+    SQLALCHEMY_ENGINE_OPTIONS={
+        "pool_pre_ping": True,
+        "pool_size": 5,
+        "max_overflow": 10,
+        "pool_timeout": 30,
+        "pool_recycle": 300  # Reduced for cloud environment
+    }
+)
 
 mail = Mail(app)
 
 # ----------------------
-# Database configuration
+# Database Setup
 # ----------------------
-# Prefer a single DATABASE_URL env var; fallback to components if provided
-def _build_fallback_mysql_uri():
-    host = os.getenv('MYSQLHOST')
+def build_db_uri(private=False):
+    prefix = 'MYSQL_PRIVATE_' if private else 'MYSQL'
+    host = os.getenv(f'{prefix}HOST')
     user = os.getenv('MYSQLUSER')
     pwd = os.getenv('MYSQLPASSWORD')
     name = os.getenv('MYSQLDATABASE')
-    port = os.getenv('MYSQLPORT')
-    if not (host and user and pwd and name and port):
-        logger.warning('Missing some MySQL fallback components (MYSQLHOST, MYSQLUSER, etc.).')
+    port = os.getenv(f'{prefix}PORT')
+    if not all([host, user, pwd, name, port]):
+        logger.warning(f'Missing MySQL components for {"private" if private else "public"} connection')
         return None
     uri = f"mysql+pymysql://{user}:{pwd}@{host}:{port}/{name}"
-    logger.info(f"Built fallback URI from components: {uri}")
+    logger.info(f"Built {'private' if private else 'public'} DB URI: {uri}")
     return uri
 
 db_uri = (
     os.getenv('SQLALCHEMY_DATABASE_URI') or
+    os.getenv('MYSQL_PRIVATE_URL') or
+    os.getenv('DATABASE_PRIVATE_URL') or
+    build_db_uri(private=True) or
     os.getenv('MYSQL_URL') or
     os.getenv('DATABASE_URL') or
-    _build_fallback_mysql_uri()
+    build_db_uri(private=False)
 )
 
 if not db_uri:
-    logger.warning('No DATABASE_URL or DB_* components provided. The app will start but DB operations will fail until configured.')
+    logger.warning('No database URI configured, DB operations will fail')
 else:
+    app.config['SQLALCHEMY_DATABASE_URI'] = db_uri
     logger.info(f"Using DB URI: {db_uri}")
 
-app.config['SQLALCHEMY_DATABASE_URI'] = db_uri
-app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
-app.config['SQLALCHEMY_ENGINE_OPTIONS'] = {"pool_pre_ping": True}
-
-# SQLAlchemy ORM object
 db = SQLAlchemy(app)
 
-# Create a lazily-initialized engine for pandas / raw SQL operations (cached)
-_engine = None
+# Engine factory for raw SQL operations
+def get_db_engine():
+    if not db_uri:
+        raise RuntimeError('Database URI not configured')
+    return create_engine(db_uri, **app.config['SQLALCHEMY_ENGINE_OPTIONS'])
 
-def get_engine():
-    global _engine
-    if _engine is None:
-        if not db_uri:
-            raise RuntimeError('Database URI is not configured')
-        _engine = create_engine(db_uri, pool_pre_ping=True)
-    return _engine
+# Context manager for database connections
+@contextmanager
+def db_connection():
+    engine = get_db_engine()
+    connection = engine.connect()
+    try:
+        yield connection
+    finally:
+        connection.close()
 
-# ---- Token Serializer for password reset ----
+# Token Serializer
 TOKEN_SERIALIZER = URLSafeTimedSerializer(app.config['SECRET_KEY'])
-RESET_TOKEN_SALT = os.environ.get('RESET_TOKEN_SALT', 'reset-password-salt')
+RESET_TOKEN_SALT = os.getenv('RESET_TOKEN_SALT', 'reset-password-salt')
+
+# ----------------------
+# Utility Functions
+# ----------------------
+def handle_db_error(e, operation):
+    logger.exception(f"Error in {operation}")
+    return jsonify({'error': f'Error {operation}: {str(e)}'}), 500
 
 # ----------------------
 # Routes
@@ -89,7 +124,6 @@ RESET_TOKEN_SALT = os.environ.get('RESET_TOKEN_SALT', 'reset-password-salt')
 @app.route('/')
 def index():
     return render_template('index.html')
-
 
 @app.route('/upload', methods=['POST'])
 def upload_file():
@@ -103,7 +137,6 @@ def upload_file():
         if not all(col in df.columns for col in required_columns):
             return jsonify({'error': 'Missing required columns'}), 400
 
-        # Normalize column names
         df = df.rename(columns={
             'Phone_Number': 'phone_number',
             'EFD': 'efd',
@@ -115,33 +148,25 @@ def upload_file():
             'Q2': 'q2',
             'Q3': 'q3'
         })
-
         df = df.sort_values(by=['phone_number', 'efd', 'job_category', 'sex'])
 
-        engine = get_engine()
-
-        # Replace table contents in a transaction using TRUNCATE then batch-insert
-        with engine.begin() as conn:
+        with db_connection() as conn:
             conn.execute(text('TRUNCATE TABLE survey_responses'))
             batch_size = 1000
             columns = ['phone_number', 'efd', 'job_category', 'employment_status', 'sex', 'status', 'q1', 'q2', 'q3']
             for start in range(0, len(df), batch_size):
                 batch = df.iloc[start:start + batch_size][columns]
-                # pandas.to_sql uses SQLAlchemy engine; use if_exists='append'
-                batch.to_sql('survey_responses', con=engine, if_exists='append', index=False)
+                batch.to_sql('survey_responses', con=get_db_engine(), if_exists='append', index=False)
 
-        return jsonify({'message': 'File uploaded and data saved to database successfully'}), 200
-
+        return jsonify({'message': 'File uploaded and data saved successfully'}), 200
     except Exception as e:
-        logger.exception('Error processing uploaded file')
-        return jsonify({'error': f'Error processing file: {str(e)}'}), 500
-
+        return handle_db_error(e, 'processing upload')
 
 @app.route('/download', methods=['GET'])
 def download_file():
     try:
-        engine = get_engine()
-        df = pd.read_sql('SELECT * FROM survey_responses', con=engine)
+        with db_connection() as conn:
+            df = pd.read_sql('SELECT * FROM survey_responses', con=conn)
         df['is_duplicate'] = df.duplicated(subset=['phone_number', 'efd', 'job_category', 'sex'], keep=False)
 
         output = io.BytesIO()
@@ -156,15 +181,13 @@ def download_file():
         output.seek(0)
         return send_file(output, download_name='survey_data.xlsx', as_attachment=True)
     except Exception as e:
-        logger.exception('Error generating download')
-        return jsonify({'error': f'Error downloading file: {str(e)}'}), 500
-
+        return handle_db_error(e, 'generating download')
 
 @app.route('/api/data', methods=['GET'])
 def get_data():
     try:
-        engine = get_engine()
-        df = pd.read_sql('SELECT * FROM survey_responses', con=engine)
+        with db_connection() as conn:
+            df = pd.read_sql('SELECT * FROM survey_responses', con=conn)
 
         q1_options = [
             '1. SEAH awareness', '2. Disciplinary action', '5. SemaUsikike',
@@ -178,7 +201,11 @@ def get_data():
                     q1_counts[option] += 1
 
         total_respondents = len(df['q1'].dropna().unique())
-        q1_dist = {'Q1': 0.6, 'Q2': 0.2, 'Q3': 0.2} if total_respondents > 0 else {'Q1': 0, 'Q2': 0, 'Q3': 0}
+        q1_dist = {
+            'Q1': len(df[df['q1'].notna()]) / total_respondents if total_respondents > 0 else 0,
+            'Q2': len(df[df['q2'].notna()]) / total_respondents if total_respondents > 0 else 0,
+            'Q3': len(df[df['q3'].notna()]) / total_respondents if total_respondents > 0 else 0
+        }
 
         return jsonify({
             'q1_counts': q1_counts,
@@ -191,29 +218,24 @@ def get_data():
             'q3': df['q3'].fillna('N/A').tolist()
         })
     except Exception as e:
-        logger.exception('Error fetching data')
-        return jsonify({'error': f'Error fetching data: {str(e)}'}), 500
-
+        return handle_db_error(e, 'fetching data')
 
 @app.route('/api/data', methods=['POST'])
 def add_data():
     try:
         data = request.json
         df = pd.DataFrame([data])
-        engine = get_engine()
-        df.to_sql('survey_responses', con=engine, if_exists='append', index=False)
+        with db_connection() as conn:
+            df.to_sql('survey_responses', con=get_db_engine(), if_exists='append', index=False)
         return jsonify({'message': 'Data added successfully'}), 201
     except Exception as e:
-        logger.exception('Error adding data')
-        return jsonify({'error': f'Error adding data: {str(e)}'}), 500
-
+        return handle_db_error(e, 'adding data')
 
 @app.route('/api/data/<int:id>', methods=['PUT'])
 def update_data(id):
     try:
         data = request.json
-        engine = get_engine()
-        with engine.begin() as conn:
+        with db_connection() as conn:
             conn.execute(
                 text("""UPDATE survey_responses SET phone_number=:phone_number, efd=:efd, job_category=:job_category, 
                      employment_status=:employment_status, sex=:sex, status=:status, q1=:q1, q2=:q2, q3=:q3 
@@ -233,37 +255,28 @@ def update_data(id):
             )
         return jsonify({'message': 'Data updated successfully'}), 200
     except Exception as e:
-        logger.exception('Error updating data')
-        return jsonify({'error': f'Error updating data: {str(e)}'}), 500
-
+        return handle_db_error(e, 'updating data')
 
 @app.route('/api/data/<int:id>', methods=['DELETE'])
 def delete_data(id):
     try:
-        engine = get_engine()
-        with engine.begin() as conn:
+        with db_connection() as conn:
             conn.execute(text('DELETE FROM survey_responses WHERE id=:id'), {'id': id})
         return jsonify({'message': 'Data deleted successfully'}), 200
     except Exception as e:
-        logger.exception('Error deleting data')
-        return jsonify({'error': f'Error deleting data: {str(e)}'}), 500
+        return handle_db_error(e, 'deleting data')
 
-
-# Healthcheck route (useful for Railway readiness)
 @app.route('/health')
 def health():
     try:
         if not db_uri:
             return jsonify({'status': 'no_db_configured'}), 200
-        engine = get_engine()
-        with engine.connect() as conn:
+        with db_connection() as conn:
             conn.execute(text('SELECT 1'))
         return jsonify({'status': 'ok'}), 200
     except Exception as e:
-        logger.exception('Healthcheck failed')
-        return jsonify({'status': 'error', 'message': str(e)}), 500
-
+        return handle_db_error(e, 'health check')
 
 if __name__ == '__main__':
     port = int(os.getenv('PORT', 8080))
-    app.run(host='0.0.0.0', port=port, debug=os.getenv('FLASK_DEBUG', 'False').lower() in ('true', '1', 'yes'))
+    app.run(host='::', port=port, debug=os.getenv('FLASK_DEBUG', 'False').lower() in ('true', '1', 'yes'))
